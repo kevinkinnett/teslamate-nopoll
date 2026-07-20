@@ -30,6 +30,12 @@ DOC = None          # full vehicle_data "response" document
 LAST_SIGNAL = 0.0   # epoch of last telemetry message
 RAW = {}            # last raw telemetry value per key (for /debug)
 app = Flask(__name__)
+# Keepalive pings. The stream handler blocks sending updates rather than
+# calling receive() in a loop, so server-side pings are what detect a peer
+# that has gone away. Note TeslaMate cycles the stream on its own schedule
+# (connect, hold for minutes, disconnect, reconnect) -- that is normal and
+# not something to debug.
+app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 25}
 sock = Sock(app)
 
 
