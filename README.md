@@ -14,6 +14,29 @@ location history never leaves your infrastructure.
 
 ---
 
+## Background: what changed with Tesla's API
+
+TeslaMate originally used Tesla's unofficial **Owner API**, which was free. Tesla
+replaced it with the official **Fleet API**, and then started charging for it:
+
+| Date | Change |
+|---|---|
+| **11 Oct 2023** | Fleet API documentation published. |
+| **April 2024** | Vehicle APIs outside the Fleet API are phased out — the Owner API goes away, and every third-party tool has to migrate. |
+| **Late 2024** | Tesla announces pay-per-use pricing for the Fleet API. |
+| **1 Jan 2025** | **Billing takes effect.** Usage before this is waived. Each account gets a **$10/month credit**. |
+| **1 Sep 2025** | The Model S/X `vehicle_data` discount is removed. |
+
+The important detail is how Tesla sized that $10 credit. Their own docs describe it as
+covering *"data streaming, 100 commands, and 2 wakes per day for two vehicles"* — it is
+budgeted for **Fleet Telemetry streaming**, not for polling. Tesla prices `vehicle_data`
+polling at **$0.12/hour** (one request per minute), and expects you not to do it.
+
+TeslaMate's design predates all of this: it polls. That's the mismatch this project
+closes.
+
+---
+
 ## Why this exists
 
 Tesla's Fleet API bills **$0.002 per `vehicle_data` request**, against a $10/month credit.
@@ -61,14 +84,25 @@ Seeding matters because **telemetry is delta-only**: the car sends a field only 
 *changes*. A cold service would never learn slow-moving values like `charge_limit_soc`,
 `sentry_mode`, `car_version`, or the odometer of a parked car.
 
-### Cost after switching
+### What it costs, per unit of time
 
-| | Before | After |
+Measured on a real car (2026 Model Y, Sentry Mode always on), before and after:
+
+| | Polling (before) | nopoll (after) |
 |---|---|---|
-| Parked, Sentry on | ~1,460 req/day (~$88/mo) | **0** |
-| Per drive | ~830 req | **0** |
-| Streaming signals | — | ~$0.01/mo |
-| Service restart (re-seed) | — | ~$0.002 |
+| **10 minutes of driving** | ~$0.47 | **~$0.01** |
+| **1 hour of driving** | ~$2.85 | **~$0.06** |
+| **1 hour parked** (car awake) | ~$0.12 | **$0** |
+| **1 day parked** | ~$2.90 | **$0** |
+| Typical month (~33 h driving) | ~$180 | **~$2** |
+
+The parked figure matches Tesla's own published `vehicle_data` rate of $0.12/hour, which
+is simply one request per minute. Driving costs far more because TeslaMate polls roughly
+every 3 seconds while the car is moving.
+
+With nopoll the only ongoing charge is **streaming signals** (~$0.01/month), plus ~$0.002
+each time the service cold-starts and re-seeds. Both sit far inside the $10 credit, so in
+practice the bill is **$0**.
 
 ---
 
@@ -80,12 +114,30 @@ Seeding matters because **telemetry is delta-only**: the car sends a field only 
 - Docker + Docker Compose
 - An existing TeslaMate install
 
+### Where to run it
+
+This is built to run **on your own machine** — the same box as TeslaMate, typically a
+home server, NAS, or mini-PC. That is the whole point: your car streams directly to
+hardware you own, and your location history never touches anyone else's service.
+
+Because the **car connects to you**, that machine has to be reachable from the internet
+on your telemetry port (plus 80/443 for the public key). At home that means a public
+hostname — dynamic DNS is fine — and port forwarding.
+
+**You can run it on a cloud VM instead**, and nothing in this project changes if you do.
+A small VPS is a reasonable choice if you can't port-forward (CGNAT, a landlord's
+router, corporate ISP), don't want inbound ports open at home, or want an address that
+doesn't move. You give up nothing architecturally — it's still *your* server rather than
+a third-party service — you just pay a few dollars a month and your data transits a
+machine you rent instead of one you own. Either way, point TeslaMate at it over a
+private network (VPN/Tailscale) rather than the public internet.
+
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/teslamate-nopoll.git && cd teslamate-nopoll
+git clone https://github.com/kevinkinnett/teslamate-nopoll.git && cd teslamate-nopoll
 cp .env.example .env      # fill in VIN, domain, client id/secret
 ./scripts/gen-certs.sh    # self-signed CA + server cert for the car's mTLS
 docker compose up -d
@@ -154,10 +206,6 @@ These cost real debugging time. All are handled by nopoll, but if you fork or ex
 nopoll serves an **unauthenticated** API containing your vehicle's location. Bind it to a
 private interface (loopback, a VPN address such as Tailscale, or an internal Docker
 network) — **never** expose port 8099 to the internet.
-
-**Never commit:** `.env`, OAuth tokens, your app's private key, the CA key, or
-`data/seed.json` — the seed contains your **VIN, home coordinates, and odometer**.
-The included `.gitignore` covers these.
 
 ---
 
