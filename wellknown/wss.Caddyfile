@@ -1,0 +1,8 @@
+{
+	auto_https off
+}
+
+:8443 {
+	tls /certs/app.cert /certs/app.key
+	reverse_proxy bridge:8081
+}

@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# SECRETS — never commit. Git history is forever; a leaked secret is leaked
+# even if a later commit removes it.
+# ---------------------------------------------------------------------------
+
+# Environment / credentials
+.env
+.env.*
+!.env.example
+*.secret
+.oauth_secret
+.access_token
+.refresh_token
+.oauth_state
+
+# Everything the scripts write: client secret, access + refresh tokens
+secrets/
+
+# vehicle-command proxy material: your app signing key + its TLS key
+proxy/
+
+# Tesla application keys + the CA that signs your telemetry server cert
+private-key.pem
+public-key.pem
+*.key
+*.key.pem
+*CA.key*
+signing-key.pem
+tls-key.pem
+
+# Generated certificates (regenerate with scripts/gen-certs.sh)
+certs/
+*.cert
+*.crt
+*.csr
+
+# ---------------------------------------------------------------------------
+# PERSONAL VEHICLE DATA
+# seed.json is produced from a real vehicle_data call and contains your
+# VIN, home coordinates and odometer. Never commit it.
+# ---------------------------------------------------------------------------
+data/
+*/data/
+seed.json
+state.json
+
+# Caddy / ACME state (contains issued certs + account keys)
+wellknown/data/
+caddy_data/
+acme/
+
+# ---------------------------------------------------------------------------
+# Runtime / build noise
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.log
+*.bak
+*.bak.*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

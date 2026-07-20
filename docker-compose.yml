@@ -1,0 +1,126 @@
+# teslamate-nopoll
+#
+# Run `cp .env.example .env` and fill it in before starting.
+# See README.md for the Tesla-side registration steps (scripts/ has helpers).
+
+services:
+  # ---------------------------------------------------------------------
+  # Tesla's telemetry server. The car opens an mTLS WebSocket to this.
+  # Must be reachable from the internet on ${TELEMETRY_PORT}.
+  # ---------------------------------------------------------------------
+  fleet-telemetry:
+    image: tesla/fleet-telemetry:latest
+    container_name: nopoll-fleet-telemetry
+    restart: unless-stopped
+    volumes:
+      - ./fleet-telemetry/config.json:/etc/fleet-telemetry/config.json:ro
+      - ./certs/vehicle_device.CA.cert:/etc/tesla/certs/server/vehicle_device.CA.cert:ro
+      - ./certs/vehicle_device.app.cert:/etc/tesla/certs/server/vehicle_device.app.cert:ro
+      - ./certs/vehicle_device.app.key:/etc/tesla/certs/server/vehicle_device.app.key:ro
+    ports:
+      - "${TELEMETRY_PORT:-4443}:4443"
+
+  # ---------------------------------------------------------------------
+  # The shim: consumes the telemetry stream and serves the Fleet API
+  # endpoints TeslaMate polls. Point TeslaMate's TESLA_API_HOST here.
+  #
+  # SECURITY: binds to ${SHIM_BIND} (default loopback). This API is
+  # unauthenticated and exposes your vehicle's location -- never bind it
+  # to a public interface. Use a VPN address (e.g. Tailscale) if TeslaMate
+  # runs on another host.
+  # ---------------------------------------------------------------------
+  shim:
+    build: ./shim
+    container_name: nopoll-shim
+    restart: unless-stopped
+    depends_on: [fleet-telemetry]
+    environment:
+      VIN: "${VIN}"
+      DISPLAY_NAME: "${DISPLAY_NAME:-Tesla}"
+      ZMQ_ADDR: "tcp://fleet-telemetry:5284"
+      ASLEEP_AFTER_SEC: "${ASLEEP_AFTER_SEC:-1200}"
+    volumes:
+      - ./data:/data
+    ports:
+      - "${SHIM_BIND:-127.0.0.1}:${SHIM_PORT:-8099}:8099"
+
+  # ---------------------------------------------------------------------
+  # Serves your app's public key at
+  #   https://${DOMAIN}/.well-known/appspecific/com.tesla.3p.public-key.pem
+  # with a real Let's Encrypt certificate. Tesla requires this to register
+  # ${DOMAIN} as a partner domain, and it must REMAIN reachable.
+  # Needs ports 80 and 443 forwarded from the internet.
+  # ---------------------------------------------------------------------
+  wellknown:
+    image: caddy:2
+    container_name: nopoll-wellknown
+    restart: unless-stopped
+    environment:
+      DOMAIN: "${DOMAIN}"
+      LE_EMAIL: "${LE_EMAIL}"
+    volumes:
+      - ./wellknown/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./wellknown/srv:/srv:ro
+      - ./wellknown/data:/data
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:80:80"
+      - "${HTTPS_BIND:-0.0.0.0}:443:443"
+
+  # ---------------------------------------------------------------------
+  # Streaming path to TeslaMate (TESLA_WSS_HOST).
+  # NOTE: slated to be folded into the shim -- see README "Roadmap".
+  # ---------------------------------------------------------------------
+  bridge:
+    image: ghcr.io/myteslamate/websocket:latest
+    container_name: nopoll-bridge
+    restart: unless-stopped
+    environment:
+      ENFORCE_TOKEN: "false"
+
+  adapter:
+    build: ./adapter
+    container_name: nopoll-adapter
+    restart: unless-stopped
+    depends_on: [fleet-telemetry, bridge]
+    environment:
+      ZMQ_ADDR: "tcp://fleet-telemetry:5284"
+      BRIDGE_URL: "http://bridge:8081/"
+
+  wss:
+    image: caddy:2
+    container_name: nopoll-wss
+    restart: unless-stopped
+    depends_on: [bridge]
+    volumes:
+      - ./wellknown/wss.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs/vehicle_device.app.cert:/certs/app.cert:ro
+      - ./certs/vehicle_device.app.key:/certs/app.key:ro
+    ports:
+      - "${WSS_BIND:-127.0.0.1}:${WSS_PORT:-8443}:8443"
+
+  # ---------------------------------------------------------------------
+  # One-time setup only: signs the fleet_telemetry_config registration.
+  #   docker compose --profile setup up -d vehicle-command
+  # Not needed for normal operation.
+  # ---------------------------------------------------------------------
+  vehicle-command:
+    image: tesla/vehicle-command:latest
+    container_name: nopoll-vehicle-command
+    profiles: ["setup"]
+    restart: unless-stopped
+    command:
+      - -tls-key
+      - /config/tls-key.pem
+      - -cert
+      - /config/tls-cert.pem
+      - -key-file
+      - /config/private-key.pem
+      - -host
+      - 0.0.0.0
+      - -port
+      - "4443"
+      - -verbose
+    volumes:
+      - ./proxy:/config:ro
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-4444}:4443"

@@ -1,0 +1,8 @@
+{
+	email {$LE_EMAIL}
+}
+
+{$DOMAIN} {
+	root * /srv
+	file_server
+}
