@@ -67,30 +67,15 @@ services:
       - "${HTTPS_BIND:-0.0.0.0}:443:443"
 
   # ---------------------------------------------------------------------
-  # Streaming path to TeslaMate (TESLA_WSS_HOST).
-  # NOTE: slated to be folded into the shim -- see README "Roadmap".
+  # TLS front for the TeslaMate streaming endpoint (TESLA_WSS_HOST).
+  # Terminates TLS with the same self-signed cert the car uses and proxies
+  # to the shim, which serves the streaming WebSocket itself.
   # ---------------------------------------------------------------------
-  bridge:
-    image: ghcr.io/myteslamate/websocket:latest
-    container_name: nopoll-bridge
-    restart: unless-stopped
-    environment:
-      ENFORCE_TOKEN: "false"
-
-  adapter:
-    build: ./adapter
-    container_name: nopoll-adapter
-    restart: unless-stopped
-    depends_on: [fleet-telemetry, bridge]
-    environment:
-      ZMQ_ADDR: "tcp://fleet-telemetry:5284"
-      BRIDGE_URL: "http://bridge:8081/"
-
   wss:
     image: caddy:2
     container_name: nopoll-wss
     restart: unless-stopped
-    depends_on: [bridge]
+    depends_on: [shim]
     volumes:
       - ./wellknown/wss.Caddyfile:/etc/caddy/Caddyfile:ro
       - ./certs/vehicle_device.app.cert:/certs/app.cert:ro
