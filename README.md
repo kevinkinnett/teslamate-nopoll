@@ -21,11 +21,15 @@ replaced it with the official **Fleet API**, and then started charging for it:
 
 | Date | Change |
 |---|---|
-| **11 Oct 2023** | Fleet API documentation published. |
-| **April 2024** | Vehicle APIs outside the Fleet API are phased out — the Owner API goes away, and every third-party tool has to migrate. |
-| **Late 2024** | Tesla announces pay-per-use pricing for the Fleet API. |
-| **1 Jan 2025** | **Billing takes effect.** Usage before this is waived. Each account gets a **$10/month credit**. |
-| **1 Sep 2025** | The Model S/X `vehicle_data` discount is removed. |
+| **Oct 2023** | Fleet API documentation published. |
+| **From April 2024** | Tesla begins [phasing out vehicle APIs outside the Fleet API](https://github.com/teslamate-org/teslamate/discussions/3792), including the Owner API. This was **gradual** — many tools kept working, partially or with workarounds, well into the phase-out, so people hit the wall at different times. |
+| **Late 2024** | Tesla announces pay-per-use pricing. |
+| **1 Jan 2025** | [**Billing takes effect.**](https://developer.tesla.com/docs/fleet-api/billing-and-limits) Usage before this is waived. Each account gets a **$10/month credit**. |
+
+Because the retirement was staged and the credit is generous for light use, a setup can
+work fine for months and then suddenly start costing money — either when the last Owner
+API path closes, or when your usage crosses the credit. Both feel like "it broke
+recently" even though the platform changed much earlier.
 
 The important detail is how Tesla sized that $10 credit. Their own docs describe it as
 covering *"data streaming, 100 commands, and 2 wakes per day for two vehicles"* — it is
@@ -216,6 +220,14 @@ network) — **never** expose port 8099 to the internet.
   flows through a third party. Choose nopoll if you specifically want everything
   self-hosted; choose MyTeslaMate if you want it working in ten minutes.
 - **Owner API** is deprecated and no longer an option for new setups.
+
+### Prior art
+
+The approach here — synthesizing the polling API's responses from streaming state — was
+described by the TeslaMate community before this implementation existed:
+
+- [Discussion #5430 — "How to make teslamate work without additional costs"](https://github.com/teslamate-org/teslamate/discussions/5430)
+- [Discussion #4408 — "Your opinion on the Fleet API pricing?"](https://github.com/teslamate-org/teslamate/discussions/4408)
 
 ---
 
