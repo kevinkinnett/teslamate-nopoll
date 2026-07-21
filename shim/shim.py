@@ -15,6 +15,7 @@ import time
 
 import zmq
 from flask import Flask, jsonify
+from flask_sock import Sock
 
 VIN        = os.environ.get("VIN", "")
 NAME       = os.environ.get("DISPLAY_NAME", "Tesla")
@@ -29,6 +30,13 @@ DOC = None          # full vehicle_data "response" document
 LAST_SIGNAL = 0.0   # epoch of last telemetry message
 RAW = {}            # last raw telemetry value per key (for /debug)
 app = Flask(__name__)
+# Keepalive pings. The stream handler blocks sending updates rather than
+# calling receive() in a loop, so server-side pings are what detect a peer
+# that has gone away. Note TeslaMate cycles the stream on its own schedule
+# (connect, hold for minutes, disconnect, reconnect) -- that is normal and
+# not something to debug.
+app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 25}
+sock = Sock(app)
 
 
 # ---------- helpers ----------
@@ -290,6 +298,99 @@ def r_debug():
         "raw": raw,
         "vehicle_data": snapshot(),
     })
+
+
+# ---------------------------------------------------------------------------
+# TeslaMate streaming endpoint (TESLA_WSS_HOST)
+#
+# Reimplements the legacy Tesla streaming protocol that TeslaMate still speaks,
+# so we can serve it directly from the telemetry stream. TeslaMate sends a
+# `data:subscribe_oauth` frame and then expects `data:update` frames whose
+# `value` is a comma-separated row in this exact column order:
+#
+#   timestamp_ms, speed, odometer, soc, elevation, est_heading, est_lat,
+#   est_lng, power, shift_state, range, est_range, heading
+#
+# Missing values are sent empty; TeslaMate reads them as nil. Written from the
+# wire format, not from any existing bridge implementation.
+# ---------------------------------------------------------------------------
+
+STREAM_COLUMNS = ("speed", "odometer", "soc", "elevation", "est_heading",
+                  "est_lat", "est_lng", "power", "shift_state", "range",
+                  "est_range", "heading")
+
+
+def stream_row():
+    doc = snapshot()
+    cs = doc.get("charge_state", {}) or {}
+    ds = doc.get("drive_state", {}) or {}
+    vs = doc.get("vehicle_state", {}) or {}
+    values = {
+        "speed": ds.get("speed"),
+        "odometer": vs.get("odometer"),
+        "soc": cs.get("battery_level"),
+        "elevation": None,                      # not available via telemetry
+        "est_heading": ds.get("heading"),
+        "est_lat": ds.get("latitude"),
+        "est_lng": ds.get("longitude"),
+        "power": ds.get("power"),
+        "shift_state": ds.get("shift_state"),
+        "range": cs.get("battery_range"),
+        "est_range": cs.get("est_battery_range"),
+        "heading": ds.get("heading"),
+    }
+    cells = [str(int(time.time() * 1000))]
+    for col in STREAM_COLUMNS:
+        v = values.get(col)
+        cells.append("" if v is None else str(v))
+    return ",".join(cells)
+
+
+def r_streaming(ws):
+    tag = VIN
+    try:
+        first = ws.receive(timeout=30)
+    except Exception:
+        return
+    if first:
+        try:
+            msg = json.loads(first)
+            tag = msg.get("tag") or tag
+            print("[shim] stream subscribe: %s tag=%s"
+                  % (msg.get("msg_type"), tag), flush=True)
+        except Exception:
+            pass
+
+    sent_at = 0.0
+    try:
+        while True:
+            if LAST_SIGNAL > sent_at:
+                sent_at = LAST_SIGNAL
+                ws.send(json.dumps({"msg_type": "data:update",
+                                    "tag": str(tag),
+                                    "value": stream_row()}))
+            time.sleep(1)
+    except Exception:
+        pass
+    finally:
+        print("[shim] stream closed tag=%s" % tag, flush=True)
+
+
+# NOTE: two flask_sock gotchas:
+#  1. its route decorator does not return the wrapped function, so decorators
+#     cannot be stacked;
+#  2. Flask derives the endpoint name from __name__, so registering the same
+#     function on two paths collides ("overwriting an existing endpoint").
+# Register each path via a thin uniquely-named wrapper.
+def _register_stream(path, endpoint_name):
+    def handler(ws):
+        return r_streaming(ws)
+    handler.__name__ = endpoint_name
+    sock.route(path)(handler)
+
+
+_register_stream("/streaming/", "streaming_slash")
+_register_stream("/streaming", "streaming_noslash")
 
 
 UNHANDLED = {}

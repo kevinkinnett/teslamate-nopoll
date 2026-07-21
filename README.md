@@ -74,9 +74,13 @@ nopoll closes that gap: it answers those polls locally, from the telemetry strea
                                                      ▼
                                                    nopoll
                                                      │
-                          vehicle_data REST (:8099)  │
+              vehicle_data REST   (TESLA_API_HOST)   │
+              streaming WebSocket (TESLA_WSS_HOST)   │
    TeslaMate  ◄──────────────────────────────────────┘
 ```
+
+nopoll serves **both** sides of TeslaMate's data path: the `vehicle_data` REST
+endpoints it polls, and the legacy streaming WebSocket it uses during drives.
 
 nopoll keeps an in-memory `vehicle_data` document:
 
@@ -233,11 +237,8 @@ described by the TeslaMate community before this implementation existed:
 
 ## Roadmap
 
-- **Fold the streaming bridge into the shim.** Today the TeslaMate streaming
-  path runs through `adapter` + `bridge` + a TLS front (`wss`), where `bridge`
-  is a third-party image expecting a Google Pub/Sub push envelope. The shim can
-  serve that WebSocket itself, collapsing four services into two and removing
-  the last external dependency.
+- **Terminate TLS in the shim** so the small Caddy front (`wss`) can be dropped
+  too, taking the stack to three services.
 - Optional Prometheus metrics for stream health and field freshness.
 
 ## Limitations
