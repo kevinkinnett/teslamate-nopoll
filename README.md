@@ -237,8 +237,6 @@ described by the TeslaMate community before this implementation existed:
 
 ## Roadmap
 
-- **Terminate TLS in the shim** so the small Caddy front (`wss`) can be dropped
-  too, taking the stack to three services.
 - Optional Prometheus metrics for stream health and field freshness.
 
 ## Limitations

@@ -41,8 +41,16 @@ services:
       ASLEEP_AFTER_SEC: "${ASLEEP_AFTER_SEC:-1200}"
     volumes:
       - ./data:/data
+      # The shim terminates TLS for the streaming endpoint itself, using the
+      # same self-signed cert the car trusts. TeslaMate connects with
+      # TESLA_WSS_TLS_ACCEPT_INVALID_CERTS=true, so the SAN does not matter.
+      - ./certs/vehicle_device.app.cert:/certs/app.cert:ro
+      - ./certs/vehicle_device.app.key:/certs/app.key:ro
     ports:
+      # Plain HTTP: TeslaMate's TESLA_API_HOST (REST polling).
       - "${SHIM_BIND:-127.0.0.1}:${SHIM_PORT:-8099}:8099"
+      # TLS: TeslaMate's TESLA_WSS_HOST (streaming WebSocket).
+      - "${WSS_BIND:-127.0.0.1}:${WSS_PORT:-8443}:8443"
 
   # ---------------------------------------------------------------------
   # Serves your app's public key at
@@ -65,23 +73,6 @@ services:
     ports:
       - "${HTTP_BIND:-0.0.0.0}:80:80"
       - "${HTTPS_BIND:-0.0.0.0}:443:443"
-
-  # ---------------------------------------------------------------------
-  # TLS front for the TeslaMate streaming endpoint (TESLA_WSS_HOST).
-  # Terminates TLS with the same self-signed cert the car uses and proxies
-  # to the shim, which serves the streaming WebSocket itself.
-  # ---------------------------------------------------------------------
-  wss:
-    image: caddy:2
-    container_name: nopoll-wss
-    restart: unless-stopped
-    depends_on: [shim]
-    volumes:
-      - ./wellknown/wss.Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./certs/vehicle_device.app.cert:/certs/app.cert:ro
-      - ./certs/vehicle_device.app.key:/certs/app.key:ro
-    ports:
-      - "${WSS_BIND:-127.0.0.1}:${WSS_PORT:-8443}:8443"
 
   # ---------------------------------------------------------------------
   # One-time setup only: signs the fleet_telemetry_config registration.
