@@ -92,6 +92,22 @@ Seeding matters because **telemetry is delta-only**: the car sends a field only 
 *changes*. A cold service would never learn slow-moving values like `charge_limit_soc`,
 `sentry_mode`, `car_version`, or the odometer of a parked car.
 
+### Components
+
+`docker compose up -d` starts three long-running services:
+
+| Service | Role |
+|---|---|
+| **fleet-telemetry** | Tesla's own telemetry server — the car's mTLS endpoint on `:4443`. |
+| **nopoll** (the shim) | Consumes the stream and serves TeslaMate directly: the `vehicle_data` REST API (`:8099`, plain HTTP) **and** the streaming WebSocket (`:8443`, TLS) — it terminates TLS itself, no separate proxy. |
+| **wellknown** | A small Caddy that obtains a Let's Encrypt cert and serves your app's public key on `:443`. Tesla requires this to keep your partner domain valid, so it must stay reachable. |
+
+A fourth service, **vehicle-command**, runs only during setup (`--profile setup`) to sign
+the one-time telemetry registration. It is not part of normal operation.
+
+There are no third-party application images in the data path — the shim speaks both of
+TeslaMate's protocols itself.
+
 ### What it costs, per unit of time
 
 Measured on a real car (2026 Model Y, Sentry Mode always on), before and after:
