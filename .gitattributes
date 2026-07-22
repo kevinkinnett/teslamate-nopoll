@@ -1,0 +1,7 @@
+# Shell scripts must be LF or they won't run on Linux, regardless of the
+# committer's OS or git autocrlf setting.
+*.sh    text eol=lf
+*.py    text eol=lf
+Dockerfile text eol=lf
+Caddyfile  text eol=lf
+* text=auto

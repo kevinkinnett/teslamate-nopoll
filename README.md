@@ -162,19 +162,29 @@ private network (VPN/Tailscale) rather than the public internet.
 
 ```bash
 git clone https://github.com/kevinkinnett/teslamate-nopoll.git && cd teslamate-nopoll
-cp .env.example .env      # fill in VIN, domain, client id/secret
-./scripts/gen-certs.sh    # self-signed CA + server cert for the car's mTLS
-docker compose up -d
+./scripts/setup.sh
 ```
 
-Then complete the Tesla-side registration (see below) and point TeslaMate at nopoll:
+`setup.sh` is a guided wizard. It collects your configuration, generates the certificates,
+walks you through the Tesla-side registration **with validation and retries at each step**,
+and brings the stack up. Every step detects whether it is already done, so you can quit
+(Ctrl-C) and re-run any time without starting over.
+
+When it finishes, point TeslaMate at nopoll:
 
 ```env
 TESLA_API_HOST=http://<nopoll-host>:8099
+TESLA_WSS_HOST=wss://<nopoll-host>:8443
+TESLA_WSS_TLS_ACCEPT_INVALID_CERTS=true
+TESLA_WSS_USE_VIN=true
 # leave TESLA_AUTH_HOST alone — auth is free and must stay real
 ```
 
 Recreate TeslaMate so it picks up the change (`docker compose up -d`, not `restart`).
+
+> **Prefer to do it by hand?** Every step the wizard runs is a standalone script in
+> `scripts/` (`gen-certs.sh`, `get-token.sh`, `register-domain.sh`, `register-telemetry.sh`),
+> and the manual walkthrough is below.
 
 ---
 

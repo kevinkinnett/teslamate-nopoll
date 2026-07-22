@@ -64,3 +64,6 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+# Per-user app public key served by the wellknown service (keep the dir, not the key)
+wellknown/srv/.well-known/appspecific/*.pem

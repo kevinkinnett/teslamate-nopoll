@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# Generate the certificate chain the CAR uses to reach your telemetry server.
+# Generates every key and certificate the stack needs. Safe to re-run: existing
+# material is kept unless you delete it. Reads DOMAIN from .env.
 #
-# This is a SELF-SIGNED chain and that is correct: the car validates your
-# server against the CA you register with Tesla in fleet_telemetry_config,
-# not against a public CA. Do NOT use Let's Encrypt here.
+# There are three independent pieces of crypto here, and confusing them is the
+# usual source of pain:
 #
-# (Let's Encrypt IS needed separately, on :443, for the partner-domain
-# public key -- that is handled by the `wellknown` service.)
+#   1. Application key pair  — your third-party app's identity. The PUBLIC key
+#      is hosted at the .well-known path and registered with Tesla; the PRIVATE
+#      key signs commands (via the vehicle-command proxy).
+#
+#   2. Telemetry CA + server cert — SELF-SIGNED, and that is correct. The car
+#      validates your telemetry server against the CA you register with Tesla,
+#      not against a public CA. No Let's Encrypt here.
+#
+#   3. Proxy TLS cert — a throwaway self-signed cert for the local
+#      vehicle-command proxy's own HTTPS listener. Clients reach it with -k.
+#
+# (Let's Encrypt IS needed, but only for the :443 public-key endpoint, and that
+# is handled automatically by the `wellknown` service — not by this script.)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -15,49 +26,72 @@ cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 : "${DOMAIN:?DOMAIN must be set in .env}"
 
-OUT=certs
-mkdir -p "$OUT"
+CERTS=certs
+PROXY=proxy
+WK=wellknown/srv/.well-known/appspecific
+mkdir -p "$CERTS" "$PROXY" "$WK"
+chmod 700 "$PROXY" 2>/dev/null || true
 
-if [ -f "$OUT/vehicle_device.CA.cert" ]; then
-  echo "certs/ already populated -- refusing to overwrite."
-  echo "Delete certs/ first if you really want to regenerate."
-  echo "NOTE: regenerating the CA means re-running scripts/register-telemetry.sh,"
-  echo "      because the car validates against the CA you registered."
-  exit 1
+# 1) APPLICATION KEY PAIR ----------------------------------------------------
+if [ -f "$PROXY/private-key.pem" ]; then
+  echo "==> app key pair exists ($PROXY/private-key.pem) — keeping it"
+else
+  echo "==> app key pair (EC P-256)"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$PROXY/private-key.pem"
+  openssl ec -in "$PROXY/private-key.pem" -pubout \
+    -out "$WK/com.tesla.3p.public-key.pem" 2>/dev/null
+  # The vehicle-command image runs as a non-root user and must read the key;
+  # 644 in a 700 directory keeps other local users out while letting the
+  # container in via the bind mount. The public key is, of course, public.
+  chmod 644 "$PROXY/private-key.pem" "$WK/com.tesla.3p.public-key.pem"
 fi
 
-echo "==> CA (EC P-256, 10 years)"
-openssl ecparam -name prime256v1 -genkey -noout -out "$OUT/vehicle_device.CA.key"
-openssl req -x509 -new -nodes -key "$OUT/vehicle_device.CA.key" \
-  -sha256 -days 3650 -out "$OUT/vehicle_device.CA.cert" \
-  -subj "/CN=${DOMAIN}-telemetry-CA"
+# 2) PROXY TLS CERT ----------------------------------------------------------
+if [ -f "$PROXY/tls-cert.pem" ]; then
+  echo "==> proxy TLS cert exists — keeping it"
+else
+  echo "==> proxy TLS cert (self-signed, localhost)"
+  # Two-step (ecparam then req -x509 -key) for portability across openssl
+  # versions. This is a localhost cert reached with curl -k, so no SAN needed.
+  openssl ecparam -name prime256v1 -genkey -noout -out "$PROXY/tls-key.pem"
+  openssl req -x509 -new -nodes -key "$PROXY/tls-key.pem" -sha256 -days 3650 \
+    -out "$PROXY/tls-cert.pem" -subj "/CN=localhost"
+  chmod 644 "$PROXY/tls-key.pem" "$PROXY/tls-cert.pem"
+fi
 
-echo "==> server key + CSR (SAN=${DOMAIN})"
-openssl ecparam -name prime256v1 -genkey -noout -out "$OUT/vehicle_device.app.key"
-openssl req -new -key "$OUT/vehicle_device.app.key" \
-  -out "$OUT/vehicle_device.app.csr" -subj "/CN=${DOMAIN}"
+# 3) TELEMETRY CA + SERVER CERT ----------------------------------------------
+if [ -f "$CERTS/vehicle_device.CA.cert" ]; then
+  echo "==> telemetry CA + server cert exist — keeping them"
+  echo "    (delete certs/ to regenerate; you must then re-run register-telemetry.sh,"
+  echo "     because the car validates against the CA you registered.)"
+else
+  echo "==> telemetry CA (EC P-256, 10 years)"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$CERTS/vehicle_device.CA.key"
+  openssl req -x509 -new -nodes -key "$CERTS/vehicle_device.CA.key" \
+    -sha256 -days 3650 -out "$CERTS/vehicle_device.CA.cert" \
+    -subj "/CN=${DOMAIN}-telemetry-CA"
 
-cat > "$OUT/app.ext" <<EOF
+  echo "==> telemetry server cert (SAN=${DOMAIN})"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$CERTS/vehicle_device.app.key"
+  openssl req -new -key "$CERTS/vehicle_device.app.key" \
+    -out "$CERTS/vehicle_device.app.csr" -subj "/CN=${DOMAIN}"
+  cat > "$CERTS/app.ext" <<EOF
 subjectAltName = DNS:${DOMAIN}
 extendedKeyUsage = serverAuth
 EOF
+  openssl x509 -req -in "$CERTS/vehicle_device.app.csr" \
+    -CA "$CERTS/vehicle_device.CA.cert" -CAkey "$CERTS/vehicle_device.CA.key" \
+    -CAcreateserial -out "$CERTS/vehicle_device.app.cert" \
+    -days 3650 -sha256 -extfile "$CERTS/app.ext"
+  rm -f "$CERTS/vehicle_device.app.csr" "$CERTS/app.ext" "$CERTS/vehicle_device.CA.srl"
 
-echo "==> sign server cert with the CA"
-openssl x509 -req -in "$OUT/vehicle_device.app.csr" \
-  -CA "$OUT/vehicle_device.CA.cert" -CAkey "$OUT/vehicle_device.CA.key" \
-  -CAcreateserial -out "$OUT/vehicle_device.app.cert" \
-  -days 3650 -sha256 -extfile "$OUT/app.ext"
-
-rm -f "$OUT/vehicle_device.app.csr" "$OUT/app.ext" "$OUT/vehicle_device.CA.srl"
-
-# fleet-telemetry runs as a NON-ROOT user and must be able to read the server
-# key. The CA key is NOT mounted into the container and stays private.
-chmod 644 "$OUT/vehicle_device.app.key" "$OUT/vehicle_device.app.cert" "$OUT/vehicle_device.CA.cert"
-chmod 600 "$OUT/vehicle_device.CA.key"
+  # fleet-telemetry runs non-root -> server key must be readable (644);
+  # the CA key is never mounted and stays private (600).
+  chmod 644 "$CERTS/vehicle_device.app.key" "$CERTS/vehicle_device.app.cert" "$CERTS/vehicle_device.CA.cert"
+  chmod 600 "$CERTS/vehicle_device.CA.key"
+  openssl verify -CAfile "$CERTS/vehicle_device.CA.cert" "$CERTS/vehicle_device.app.cert"
+fi
 
 echo
-openssl verify -CAfile "$OUT/vehicle_device.CA.cert" "$OUT/vehicle_device.app.cert"
-echo
-echo "Done. Register certs/vehicle_device.CA.cert with Tesla via"
-echo "scripts/register-telemetry.sh (it is sent as the config 'ca' field)."
-echo "Keep certs/vehicle_device.CA.key private -- it is never mounted anywhere."
+echo "Done. Public key -> $WK/com.tesla.3p.public-key.pem"
+echo "Register certs/vehicle_device.CA.cert with Tesla via scripts/register-telemetry.sh."
