@@ -165,10 +165,29 @@ git clone https://github.com/kevinkinnett/teslamate-nopoll.git && cd teslamate-n
 ./scripts/setup.sh
 ```
 
-`setup.sh` is a guided wizard. It collects your configuration, generates the certificates,
-walks you through the Tesla-side registration **with validation and retries at each step**,
-and brings the stack up. Every step detects whether it is already done, so you can quit
-(Ctrl-C) and re-run any time without starting over.
+`setup.sh` is a guided wizard that takes you from a fresh clone to a running stack.
+It walks through, in order:
+
+1. **Prerequisites** — checks for Docker, `docker compose`, `openssl`, `python3`, `curl`.
+2. **Configuration** — asks for your VIN, account region, public hostname, Let's Encrypt
+   email, and Tesla app credentials (the client secret is entered hidden), and writes them
+   to `.env`.
+3. **Port forwarding** — tells you exactly which ports to open (with the AT&T-gateway
+   caveat) and lets you confirm.
+4. **Certificates** — generates the app key pair, the self-signed telemetry CA + server
+   cert, and the proxy's TLS cert.
+5. **Publish your key** — starts the `wellknown` service and **verifies the Let's Encrypt
+   cert actually issued** before moving on.
+6. **Tesla registration** — guides you through adding the Allowed Origin, pairing the
+   virtual key on your phone, signing in, registering the partner domain, and configuring
+   the car to stream.
+7. **Start the stack** and print the exact TeslaMate settings to paste.
+
+It is designed to be **safe to interrupt**: every step detects whether it is already done,
+and the fragile ones (cert issuance, domain registration, telemetry config) are retry
+loops with `[r]etry / [l]ogs / [s]kip / [q]uit` and guidance on *why* a step failed. Quit
+with Ctrl-C and re-run any time — it picks up where you left off. Answer "yes" at the start
+to get a short explanation before each step.
 
 When it finishes, point TeslaMate at nopoll:
 
