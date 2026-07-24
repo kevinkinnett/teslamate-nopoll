@@ -212,10 +212,18 @@ def load_state():
 
 
 def persist():
-    """Persist the derived document AND the raw signals it came from."""
+    """Persist the derived document AND the raw signals it came from.
+
+    The temp file is per-process: entrypoint.sh runs two gunicorn listeners
+    (plain and TLS) and each has its own subscriber, so a shared temp name made
+    them race -- one would os.replace() the file the other was about to move,
+    and that process's save failed with ENOENT. Both still write the same final
+    path; last writer wins, which is fine because both derive from the same
+    telemetry feed.
+    """
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        tmp = STATE_FILE + ".tmp"
+        tmp = "%s.%d.tmp" % (STATE_FILE, os.getpid())
         with open(tmp, "w") as fh:
             json.dump({"doc": DOC, "raw": RAW}, fh)
         os.replace(tmp, STATE_FILE)
@@ -489,4 +497,8 @@ def r_unhandled():
 
 DOC, RAW = load_state()
 reapply_all()
-threading.Thread(target=zmq_loop, daemon=True).start()
+
+# Tests import this module for its pure helpers; SHIM_NO_START=1 skips the
+# background subscriber so importing does not open sockets or spawn threads.
+if os.environ.get("SHIM_NO_START") != "1":
+    threading.Thread(target=zmq_loop, daemon=True).start()
