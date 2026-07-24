@@ -70,8 +70,8 @@ def enum_tail(v):
     return s[i + 5:] if i >= 0 else s
 
 
-# Enum tails (and plain strings) that mean "yes/on/open".
-_TRUE_WORDS = {"true", "1", "on", "yes", "open", "vent", "partiallyopen", "enabled"}
+# Enum tails (and plain strings) that mean "yes/on".
+_TRUE_WORDS = {"true", "1", "on", "yes", "vent", "enabled", "armed", "active"}
 
 
 def truthy(v):
@@ -80,12 +80,19 @@ def truthy(v):
     Without enum awareness every '<Field>State<Value>' string falls through to
     False, which silently reports windows closed and climate off no matter what
     the car is actually doing.
+
+    Window/door states are matched by prefix rather than exact word: Tesla sends
+    'Opened' (past tense) and variants like 'PartiallyOpen', so an exact-match
+    list quietly reports an open window as closed.
     """
     if isinstance(v, bool):
         return v
     if v is None:
         return False
-    return enum_tail(v).strip().lower() in _TRUE_WORDS
+    t = enum_tail(v).strip().lower()
+    if t in _TRUE_WORDS:
+        return True
+    return t.startswith("open") or "partial" in t
 
 
 def sentry_on(v):
