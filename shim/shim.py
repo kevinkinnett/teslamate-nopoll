@@ -59,20 +59,46 @@ def unwrap(v):
     return v
 
 
+def enum_tail(v):
+    """Telemetry enums arrive as '<Field>State<Value>' strings, e.g.
+    'SentryModeStateArmed', 'WindowStateClosed', 'ShiftStateP'. Return just the
+    trailing value ('Armed', 'Closed', 'P'). Plain values pass through."""
+    if v is None:
+        return ""
+    s = str(v)
+    i = s.rfind("State")
+    return s[i + 5:] if i >= 0 else s
+
+
+# Enum tails (and plain strings) that mean "yes/on/open".
+_TRUE_WORDS = {"true", "1", "on", "yes", "open", "vent", "partiallyopen", "enabled"}
+
+
 def truthy(v):
+    """Boolean-ish conversion that understands telemetry enum strings.
+
+    Without enum awareness every '<Field>State<Value>' string falls through to
+    False, which silently reports windows closed and climate off no matter what
+    the car is actually doing.
+    """
     if isinstance(v, bool):
         return v
     if v is None:
         return False
-    return str(v).lower() in ("true", "1", "open", "on", "yes")
+    return enum_tail(v).strip().lower() in _TRUE_WORDS
 
 
-def strip_enum(v, prefix):
-    return str(v).replace(prefix, "").strip() if v is not None else None
+def sentry_on(v):
+    """Tesla exposes sentry as a boolean, but telemetry sends a state enum:
+    Off / Idle / Armed / Aware / Panic / Quiet. Everything except Off (and
+    unknown) means the feature is enabled."""
+    if isinstance(v, bool):
+        return v
+    return enum_tail(v).strip().lower() not in ("", "off", "unknown")
 
 
 def as_shift(v):
-    s = strip_enum(v, "ShiftState")
+    s = enum_tail(v).strip()
     if not s:
         return None
     c = s[:1].upper()
@@ -81,6 +107,15 @@ def as_shift(v):
 
 def window(v):
     return 1 if truthy(v) else 0
+
+
+# DoorState is delivered as a single dict; map its members onto the flat
+# per-door fields the Fleet API (and TeslaMate) expect.
+DOOR_MAP = {
+    "DriverFront": "df", "DriverRear": "dr",
+    "PassengerFront": "pf", "PassengerRear": "pr",
+    "TrunkFront": "ft", "TrunkRear": "rt",
+}
 
 
 def to_int(v):
@@ -107,7 +142,7 @@ MAP = {
     "DCChargingEnergyIn":   [("charge_state", "charge_energy_added", None)],
     "ChargePortDoorOpen":   [("charge_state", "charge_port_door_open", truthy)],
     "DetailedChargeState":  [("charge_state", "charging_state",
-                              lambda v: strip_enum(v, "DetailedChargeState") or "Disconnected")],
+                              lambda v: enum_tail(v).strip() or "Disconnected")],
 
     "GpsHeading":           [("drive_state", "heading", to_int)],
     "VehicleSpeed":         [("drive_state", "speed", to_int)],
@@ -115,7 +150,7 @@ MAP = {
 
     "Odometer":             [("vehicle_state", "odometer", None)],
     "Locked":               [("vehicle_state", "locked", truthy)],
-    "SentryMode":           [("vehicle_state", "sentry_mode", truthy)],
+    "SentryMode":           [("vehicle_state", "sentry_mode", sentry_on)],
     "DriverSeatOccupied":   [("vehicle_state", "is_user_present", truthy)],
     "Version":              [("vehicle_state", "car_version", None)],
     "FdWindow":             [("vehicle_state", "fd_window", window)],
@@ -132,7 +167,7 @@ MAP = {
     "HvacPower":            [("climate_state", "is_climate_on", truthy)],
     "PreconditioningEnabled": [("climate_state", "is_preconditioning", truthy)],
     "ClimateKeeperMode":    [("climate_state", "climate_keeper_mode",
-                              lambda v: (strip_enum(v, "ClimateKeeperMode") or "off").lower())],
+                              lambda v: (enum_tail(v).strip() or "off").lower())],
 }
 
 
@@ -146,28 +181,36 @@ def blank_doc():
     }
 
 
-def load_doc():
-    """Prefer persisted state; else the seed; else a blank doc."""
+def load_state():
+    """Return (doc, raw).
+
+    Accepts the current {"doc":…, "raw":…} format, the older bare-document
+    format, and a seed captured straight from the Fleet API.
+    """
     for path in (STATE_FILE, SEED_FILE):
         try:
             with open(path) as fh:
-                raw = json.load(fh)
-            doc = raw.get("response", raw)
-            if isinstance(doc, dict) and doc.get("charge_state") is not None:
-                print("[shim] loaded %s" % path, flush=True)
-                return doc
+                data = json.load(fh)
         except Exception:
             continue
+        if isinstance(data, dict) and "doc" in data:
+            print("[shim] loaded %s (doc+raw)" % path, flush=True)
+            return (data.get("doc") or blank_doc()), (data.get("raw") or {})
+        doc = data.get("response", data) if isinstance(data, dict) else None
+        if isinstance(doc, dict) and doc.get("charge_state") is not None:
+            print("[shim] loaded %s" % path, flush=True)
+            return doc, {}
     print("[shim] no seed found; starting blank", flush=True)
-    return blank_doc()
+    return blank_doc(), {}
 
 
 def persist():
+    """Persist the derived document AND the raw signals it came from."""
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w") as fh:
-            json.dump(DOC, fh)
+            json.dump({"doc": DOC, "raw": RAW}, fh)
         os.replace(tmp, STATE_FILE)
     except Exception as exc:
         print("[shim] persist failed: %s" % exc, flush=True)
@@ -182,6 +225,43 @@ def apply_signal(key, value):
             DOC.setdefault(section, {})[field] = fn(value) if fn else value
         except Exception:
             pass
+
+
+def apply_composites():
+    """Signals that arrive as one value but populate several document fields."""
+    loc = RAW.get("Location")
+    if isinstance(loc, dict):
+        lat, lon = loc.get("latitude"), loc.get("longitude")
+        ds = DOC.setdefault("drive_state", {})
+        ds["latitude"] = ds["native_latitude"] = lat
+        ds["longitude"] = ds["native_longitude"] = lon
+    # charger_power: AC and DC are separate signals; take whichever is live.
+    ac, dc = RAW.get("ACChargingPower"), RAW.get("DCChargingPower")
+    vals = [x for x in (ac, dc) if isinstance(x, (int, float))]
+    if vals:
+        DOC.setdefault("charge_state", {})["charger_power"] = to_int(max(vals))
+    # DoorState arrives as one dict covering every door.
+    doors = RAW.get("DoorState")
+    if isinstance(doors, dict):
+        vs = DOC.setdefault("vehicle_state", {})
+        for src, dst in DOOR_MAP.items():
+            if src in doors:
+                vs[dst] = 1 if truthy(doors[src]) else 0
+
+
+def reapply_all():
+    """Re-derive the whole document from the raw signals we have on hand.
+
+    Run at startup. Telemetry is delta-only, so without this a change to the
+    mapping logic would only take effect when each field next happens to
+    change -- a slow signal like SentryMode could stay wrong for days.
+    """
+    for k, v in RAW.items():
+        if v is not None:
+            apply_signal(k, v)
+    apply_composites()
+    if RAW:
+        print("[shim] re-derived document from %d stored signals" % len(RAW), flush=True)
 
 
 def zmq_loop():
@@ -210,18 +290,7 @@ def zmq_loop():
                 RAW[key] = val
                 if val is not None:
                     apply_signal(key, val)
-            # Location carries lat/lon together
-            loc = RAW.get("Location")
-            if isinstance(loc, dict):
-                lat, lon = loc.get("latitude"), loc.get("longitude")
-                ds = DOC.setdefault("drive_state", {})
-                ds["latitude"] = ds["native_latitude"] = lat
-                ds["longitude"] = ds["native_longitude"] = lon
-            # charger_power: AC and DC are separate signals; take whichever is live
-            ac, dc = RAW.get("ACChargingPower"), RAW.get("DCChargingPower")
-            vals = [x for x in (ac, dc) if isinstance(x, (int, float))]
-            if vals:
-                DOC.setdefault("charge_state", {})["charger_power"] = to_int(max(vals))
+            apply_composites()
             LAST_SIGNAL = now
             if now - last_save > 30:
                 persist()
@@ -411,5 +480,6 @@ def r_unhandled():
     return jsonify(UNHANDLED)
 
 
-DOC = load_doc()
+DOC, RAW = load_state()
+reapply_all()
 threading.Thread(target=zmq_loop, daemon=True).start()
